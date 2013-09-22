@@ -37,6 +37,39 @@
 #define BUF_LEN 0xFFFF
 #define PACKET_DUMP
 
+#define MAX_CLIENT 1024
+int g_client[MAX_CLIENT] = {0};
+
+void set_client(int client_socket)
+{
+	printf("+ %s\n", __FUNCTION__);
+	int i = 0;
+	for (;i<MAX_CLIENT;i++)
+		if (0 == g_client[i]) {
+			g_client[i] = client_socket;
+			break;
+		}
+	printf("- %s\n", __FUNCTION__);
+}
+
+void del_client(int client_socket)
+{
+	printf("+ %s\n", __FUNCTION__);
+	int i = 0;
+	for (;i<MAX_CLIENT;i++)
+		if (client_socket == g_client[i]) {
+			g_client[i] = 0;
+			break;
+		}
+	printf("- %s\n", __FUNCTION__);
+}
+
+void close_socket(int client_socket)
+{
+	del_client(client_socket);
+	close(client_socket);
+}
+
 void error(const char *msg)
 {
     perror(msg);
@@ -52,12 +85,12 @@ int safeSend(int clientSocket, const uint8_t *buffer, size_t bufferSize)
     #endif
     ssize_t written = send(clientSocket, buffer, bufferSize, 0);
     if (written == -1) {
-        close(clientSocket);
+        close_socket(clientSocket);
         perror("send failed");
         return EXIT_FAILURE;
     }
     if (written != bufferSize) {
-        close(clientSocket);
+        close_socket(clientSocket);
         perror("written not all bytes");
         return EXIT_FAILURE;
     }
@@ -84,7 +117,7 @@ void clientWorker(int clientSocket)
     while (frameType == WS_INCOMPLETE_FRAME) {
         ssize_t readed = recv(clientSocket, buffer+readedLength, BUF_LEN-readedLength, 0);
         if (!readed) {
-            close(clientSocket);
+            close_socket(clientSocket);
             perror("recv failed");
             return;
         }
@@ -170,14 +203,31 @@ void clientWorker(int clientSocket)
         }
     } // read/write cycle
     
-    close(clientSocket);
+    close_socket(clientSocket);
 }
 
-void *thread_func(void *param)
+void *thread_brocast(void *param)
 {
+	uint8_t *brocast_msg;
+	size_t dataSize;
+	uint8_t buffer[BUF_LEN] = {0};
+	size_t frameSize = BUF_LEN;
+
 	while (1) {
-		
-		sleep(1);
+		int i=0;	
+		for(;i<MAX_CLIENT;i++)
+			if (g_client[i] != 0) {
+				printf("send brocast message\n");
+                brocast_msg = "Test Msg";
+				dataSize = strlen(brocast_msg)+1;
+				memset(buffer, 0, sizeof(BUF_LEN));
+                wsMakeFrame(brocast_msg, dataSize, buffer, &frameSize, WS_TEXT_FRAME);
+                if (safeSend(g_client[i], buffer, frameSize) == EXIT_FAILURE)
+                    break;
+			} else {
+				break;
+			}
+		sleep(5);
 	}
 }
 
@@ -203,8 +253,10 @@ int main(int argc, char** argv)
     printf("opened %s:%d\n", inet_ntoa(local.sin_addr), ntohs(local.sin_port));
 
 	pthread_t thrdid;
-	pthread_create(&thrdid, NULL, thread_func, NULL);
+	pthread_create(&thrdid, NULL, thread_brocast, NULL);
     
+	pid_t pid;
+
     while (TRUE) {
         struct sockaddr_in remote;
         socklen_t sockaddrLen = sizeof(remote);
@@ -214,11 +266,21 @@ int main(int argc, char** argv)
         }
         
         printf("connected %s:%d\n", inet_ntoa(remote.sin_addr), ntohs(remote.sin_port));
-        clientWorker(clientSocket);
+
+		if ((pid = fork()) < 0)
+			printf("Failed to fork\n");
+		else if (0 == pid) { /* child process */
+			close_socket(listenSocket);
+			clientWorker(clientSocket);
+			exit(0);
+		} else { /* parent process */
+			set_client(clientSocket);
+		}
+
         printf("disconnected\n");
     }
     
-    close(listenSocket);
+    close_socket(listenSocket);
     return EXIT_SUCCESS;
 }
 
