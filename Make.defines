@@ -1,0 +1,17 @@
+################################################################################
+# Makefile
+# History:
+#     2013/09/22 Dennis Create
+################################################################################
+
+# "make" is executed in all the subdirectories of this directory
+
+CC = gcc
+CFLAGS = -I../lib -g -o2 -D_REENTRANT -Wall
+LIBS = ../libwebsocket.a -lpthread
+
+LIBWEBSOCKET_NAME = ../libwebsocket.a
+
+ROOTDIR	= $(shell pwd)
+
+CLEANFILES = *.o *.a 
