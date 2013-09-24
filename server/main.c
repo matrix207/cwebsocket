@@ -32,36 +32,40 @@
 
 #include "websocket.h"
 #include <pthread.h>
+#include <sys/mman.h>
+#include "sem.h"
 
 #define PORT 8088
 #define BUF_LEN 0xFFFF
 #define PACKET_DUMP
 
 #define MAX_CLIENT 1024
-int g_client[MAX_CLIENT] = {0};
+int *g_client;
+int semid;
 
 void set_client(int client_socket)
 {
-	printf("+ %s\n", __FUNCTION__);
+	lock_sem(semid, 0);   
 	int i = 0;
 	for (;i<MAX_CLIENT;i++)
 		if (0 == g_client[i]) {
 			g_client[i] = client_socket;
 			break;
 		}
-	printf("- %s\n", __FUNCTION__);
+	unlock_sem(semid, 0);
 }
 
 void del_client(int client_socket)
 {
-	printf("+ %s\n", __FUNCTION__);
+	lock_sem(semid, 0);   
 	int i = 0;
-	for (;i<MAX_CLIENT;i++)
+	for (;i<10;i++) {
 		if (client_socket == g_client[i]) {
 			g_client[i] = 0;
 			break;
 		}
-	printf("- %s\n", __FUNCTION__);
+	}
+	unlock_sem(semid, 0);
 }
 
 void close_socket(int client_socket)
@@ -69,6 +73,20 @@ void close_socket(int client_socket)
 	del_client(client_socket);
 	close(client_socket);
 }
+
+/*
+ * get system date time
+ */
+void get_system_time(char *datetime, int size)   
+{   
+	time_t timer;   
+	struct tm* t_tm;   
+	time(&timer);   
+	t_tm = localtime(&timer);   
+	snprintf(datetime, size, "%4d-%02d-%02d %02d:%02d:%02d", 
+			t_tm->tm_year+1900, t_tm->tm_mon+1, t_tm->tm_mday, 
+			t_tm->tm_hour, t_tm->tm_min, t_tm->tm_sec);   
+}   
 
 void error(const char *msg)
 {
@@ -208,31 +226,33 @@ void clientWorker(int clientSocket)
 
 void *thread_brocast(void *param)
 {
-	uint8_t *brocast_msg;
 	size_t dataSize;
+	uint8_t brocast_msg[BUF_LEN] = {0};
 	uint8_t buffer[BUF_LEN] = {0};
 	size_t frameSize = BUF_LEN;
 
 	while (1) {
+		lock_sem(semid, 0);
 		int i=0;	
-		for(;i<MAX_CLIENT;i++)
+		for(;i<MAX_CLIENT;i++) {
 			if (g_client[i] != 0) {
-				printf("send brocast message\n");
-                brocast_msg = "Test Msg";
+				get_system_time(brocast_msg, sizeof(brocast_msg));
 				dataSize = strlen(brocast_msg)+1;
-				memset(buffer, 0, sizeof(BUF_LEN));
+				memset(buffer, 0, sizeof(buffer));
                 wsMakeFrame(brocast_msg, dataSize, buffer, &frameSize, WS_TEXT_FRAME);
                 if (safeSend(g_client[i], buffer, frameSize) == EXIT_FAILURE)
                     break;
-			} else {
-				break;
 			}
+		}
+		unlock_sem(semid, 0);
 		sleep(5);
 	}
 }
 
 int main(int argc, char** argv)
 {
+	pid_t pid;
+
     int listenSocket = socket(AF_INET, SOCK_STREAM, 0);
     if (listenSocket == -1) {
         error("create socket failed");
@@ -252,10 +272,15 @@ int main(int argc, char** argv)
     }
     printf("opened %s:%d\n", inet_ntoa(local.sin_addr), ntohs(local.sin_port));
 
+	/* map into memory */
+	g_client = mmap(NULL, MAX_CLIENT*sizeof(int), PROT_READ | PROT_WRITE,
+			MAP_SHARED | MAP_ANON, -1, 0);
+
+	semid = init_sem(1);  
+	set_sem(semid, 0, 1);  
+
 	pthread_t thrdid;
 	pthread_create(&thrdid, NULL, thread_brocast, NULL);
-    
-	pid_t pid;
 
     while (TRUE) {
         struct sockaddr_in remote;
@@ -268,19 +293,23 @@ int main(int argc, char** argv)
         printf("connected %s:%d\n", inet_ntoa(remote.sin_addr), ntohs(remote.sin_port));
 
 		if ((pid = fork()) < 0)
-			printf("Failed to fork\n");
-		else if (0 == pid) { /* child process */
-			close_socket(listenSocket);
-			clientWorker(clientSocket);
-			exit(0);
-		} else { /* parent process */
+			printf("Failed to fork.\n");
+		else if (0 == pid) {
+			/* child process */
+			close(listenSocket);
 			set_client(clientSocket);
+			clientWorker(clientSocket);
+			printf("exit child process\n");
+			exit(0);
 		}
 
-        printf("disconnected\n");
+		/* parent process */
     }
     
-    close_socket(listenSocket);
+	free_sem(semid);
+
+    close(listenSocket);
+
     return EXIT_SUCCESS;
 }
 
